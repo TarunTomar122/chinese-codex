@@ -24,6 +24,7 @@ mod request_user_input;
 pub(crate) mod request_user_input_spec;
 mod shell;
 pub(crate) mod shell_spec;
+pub(crate) mod swarm_subagents;
 mod test_sync;
 pub(crate) mod test_sync_spec;
 mod tool_search;

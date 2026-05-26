@@ -25,6 +25,9 @@ use crate::tools::handlers::ToolSearchHandler;
 use crate::tools::handlers::UpdateGoalHandler;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WriteStdinHandler;
+use crate::tools::handlers::swarm_subagents::BuildFrontendAdvancedHandler;
+use crate::tools::handlers::swarm_subagents::BuildFrontendHandler;
+use crate::tools::handlers::swarm_subagents::BuildHandler;
 use crate::tools::handlers::agent_jobs::ReportAgentJobResultHandler;
 use crate::tools::handlers::agent_jobs::SpawnAgentsOnCsvHandler;
 use crate::tools::handlers::extension_tools::ExtensionToolAdapter;
@@ -504,9 +507,16 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     add_mcp_runtime_tools(context, planned_tools);
     add_dynamic_tools(context, planned_tools);
     add_extension_tools(context, planned_tools);
+    add_swarm_subagent_tools(planned_tools);
     for spec in hosted_model_tool_specs(context.turn_context) {
         planned_tools.add_hosted_spec(spec);
     }
+}
+
+fn add_swarm_subagent_tools(planned_tools: &mut PlannedTools) {
+    planned_tools.add(BuildHandler);
+    planned_tools.add(BuildFrontendHandler);
+    planned_tools.add(BuildFrontendAdvancedHandler);
 }
 
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {

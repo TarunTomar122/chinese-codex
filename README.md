@@ -9,6 +9,67 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+> **This is a fork of Codex CLI with native AI subagent dispatch.**  
+> GPT orchestrates — DeepSeek (opencode) and Cursor do the actual code work.  
+> Each subscription pays for its own work, not your codex quota.
+
+### What's changed
+
+Three new native tools registered in codex's tool system:
+
+| Tool | Backend | Model | For |
+|------|---------|-------|-----|
+| `build` | opencode | deepseek-v4-pro | Backend: API, DB, logic, refactoring |
+| `build_frontend` | opencode | deepseek-v4-flash | Simple frontend: CSS fixes, small components |
+| `build_frontend_advanced` | cursor | composer-2.5-fast | Complex frontend: full pages, redesigns |
+
+Features: session reuse across calls, live cost tracking from `opencode db`, configurable models via env vars, MCP timeout bumped to 600s.
+
+### Build from source
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # install Rust
+cd codex-rs
+cargo build -p codex-cli        # debug (~7 min)
+cargo build --release -p codex-cli  # release (~25 min)
+```
+
+### Usage
+
+```bash
+./target/debug/codex                           # TUI mode
+./target/debug/codex exec "build a login API"  # one-shot
+
+# Custom models per tool
+CODEX_SWARM_BUILD_MODEL=opencode-go/some-model \
+CODEX_SWARM_FRONTEND_ADVANCED_MODEL=composer-2.5-fast \
+./target/debug/codex
+```
+
+### When to delegate
+
+The orchestrator auto-decides: **≤2 files → DIY**, **3+ files → delegate to swarm**.  
+Benchmarked: subagents win at ~200k tokens / 4+ files (30% faster, 12% cheaper).
+
+### Subscriptions used
+
+| Subscription | Model | Role |
+|-------------|-------|------|
+| Codex | GPT-5.x | Orchestrator |
+| Opencode Go | deepseek-v4-pro/flash | Backend + simple frontend |
+| Cursor | composer-2.5-fast | Complex frontend |
+
+### Source changes
+
+| File | Change |
+|------|--------|
+| `codex-rs/codex-mcp/src/rmcp_client.rs:75` | Timeout 120s → 600s |
+| `codex-rs/core/src/tools/handlers/swarm_subagents.rs` | New: 3 subagent tools |
+| `codex-rs/core/src/tools/handlers/mod.rs` | Module declaration |
+| `codex-rs/core/src/tools/spec_plan.rs` | Tool registration |
+
+---
+
 ## Quickstart
 
 ### Installing and running Codex CLI
