@@ -25,6 +25,14 @@ Three new native tools registered in codex's tool system:
 
 Features: session reuse across calls, live cost tracking from `opencode db`, configurable models via env vars, MCP timeout bumped to 600s.
 
+### Orchestrator behavior
+
+Copy the swarm instructions to your codex config to get the full orchestration behavior:
+
+```bash
+cp SWARM_INSTRUCTIONS.md ~/.codex/instructions.md
+```
+
 ### Build from source
 
 ```bash
