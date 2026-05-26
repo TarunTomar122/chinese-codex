@@ -17,6 +17,8 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
 use serde::Deserialize;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::BufReader;
 
 #[derive(Deserialize)]
 struct SubagentArgs {
@@ -115,6 +117,8 @@ async fn spawn_and_collect(
     existing_session: Option<&str>,
 ) -> Result<SpawnResult, FunctionCallError> {
     let mut cmd = tokio::process::Command::new(binary);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
     for arg in base_args {
         if *arg == "--model" {
             cmd.arg("--model");
@@ -136,28 +140,38 @@ async fn spawn_and_collect(
     cmd.arg(prompt);
     cmd.kill_on_drop(true);
 
-    let output = cmd
-        .output()
-        .await
+    let mut child = cmd
+        .spawn()
         .map_err(|e| FunctionCallError::Fatal(format!("Failed to spawn {binary}: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(FunctionCallError::RespondToModel(format!(
-            "{binary} exited with {}: {}",
-            output.status,
-            stderr.chars().take(500).collect::<String>()
-        )));
-    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| FunctionCallError::Fatal("No stdout".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| FunctionCallError::Fatal("No stderr".into()))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let reader = BufReader::new(stdout);
+    let mut reader = reader;
 
+    let mut text = String::new();
+    let mut session_id: Option<String> = None;
+    let mut line_buf = String::new();
+
+    // Stream opencode JSONL line by line, print text events as they arrive
     if binary == "opencode" {
-        let mut text = String::new();
-        let mut session_id = None;
-
-        for line in stdout.lines() {
-            let line = line.trim();
+        loop {
+            line_buf.clear();
+            let n = reader
+                .read_line(&mut line_buf)
+                .await
+                .map_err(|e| FunctionCallError::Fatal(format!("read error: {e}")))?;
+            if n == 0 {
+                break; // EOF
+            }
+            let line = line_buf.trim();
             if line.is_empty() {
                 continue;
             }
@@ -175,43 +189,120 @@ async fn spawn_and_collect(
                         .and_then(|v| v.as_str())
                     {
                         text.push_str(t);
+                        eprint!("{t}");
                     }
                 }
             }
         }
-
-        if text.is_empty() {
-            return Ok(SpawnResult {
-                text: stdout.chars().take(4000).collect(),
-                session_id: None,
-            });
-        }
-        Ok(SpawnResult { text, session_id })
     } else {
-        let (text, chat_id) = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            let t = parsed
-                .get("text")
-                .or_else(|| parsed.get("content"))
-                .or_else(|| parsed.get("message"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| stdout.chars().take(4000).collect());
-            let cid = parsed
-                .get("chatId")
-                .or_else(|| parsed.get("chat_id"))
-                .or_else(|| parsed.get("sessionId"))
-                .or_else(|| parsed.get("id"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            (t, cid)
-        } else {
-            (stdout.chars().take(4000).collect(), None)
-        };
-        Ok(SpawnResult {
-            text,
+        // Cursor: just accumulate, print dots for progress
+        let mut dot_count = 0u32;
+        loop {
+            line_buf.clear();
+            let n = reader
+                .read_line(&mut line_buf)
+                .await
+                .map_err(|e| FunctionCallError::Fatal(format!("read error: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            dot_count += 1;
+            if dot_count % 100 == 0 {
+                eprint!(".");
+            }
+        }
+        // Read all accumulated stderr for cursor
+        let mut stderr_reader = BufReader::new(stderr);
+        let mut cursor_stderr = String::new();
+        loop {
+            line_buf.clear();
+            let n = stderr_reader
+                .read_line(&mut line_buf)
+                .await
+                .map_err(|e| FunctionCallError::Fatal(format!("stderr read error: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            cursor_stderr.push_str(&line_buf);
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| FunctionCallError::Fatal(format!("{binary} wait failed: {e}")))?;
+
+        if !status.success() {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "{binary} exited with {}: {}",
+                status,
+                cursor_stderr.chars().take(500).collect::<String>()
+            )));
+        }
+
+        // For cursor, parse the accumulated output
+        let (parsed_text, chat_id) =
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                let t = parsed
+                    .get("text")
+                    .or_else(|| parsed.get("content"))
+                    .or_else(|| parsed.get("message"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| text.chars().take(4000).collect());
+                let cid = parsed
+                    .get("chatId")
+                    .or_else(|| parsed.get("chat_id"))
+                    .or_else(|| parsed.get("sessionId"))
+                    .or_else(|| parsed.get("id"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                (t, cid)
+            } else {
+                (text.chars().take(4000).collect(), None)
+            };
+
+        return Ok(SpawnResult {
+            text: parsed_text,
             session_id: chat_id,
-        })
+        });
     }
+
+    // Wait for child to complete
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| FunctionCallError::Fatal(format!("{binary} wait failed: {e}")))?;
+
+    // Read stderr for error reporting
+    let mut stderr_reader = BufReader::new(stderr);
+    let mut err_output = String::new();
+    loop {
+        line_buf.clear();
+        let n = stderr_reader
+            .read_line(&mut line_buf)
+            .await
+            .map_err(|e| FunctionCallError::Fatal(format!("stderr read error: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        err_output.push_str(&line_buf);
+    }
+
+    if !status.success() {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "{binary} exited with {}: {}",
+            status,
+            err_output.chars().take(500).collect::<String>()
+        )));
+    }
+
+    if text.is_empty() {
+        return Ok(SpawnResult {
+            text: "(no text output)".into(),
+            session_id: None,
+        });
+    }
+
+    Ok(SpawnResult { text, session_id })
 }
 
 async fn query_opencode_cost(session_id: &str) -> Option<String> {
